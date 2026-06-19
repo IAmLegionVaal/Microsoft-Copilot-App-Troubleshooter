@@ -1,0 +1,6 @@
+#requires -Version 5.1
+<# Created by Dewald Pretorius #>
+param([string]$OutputPath)
+if(-not $OutputPath){$OutputPath="$([Environment]::GetFolderPath('Desktop'))\Copilot_App_Reports"};New-Item $OutputPath -ItemType Directory -Force|Out-Null
+$app=Get-AppxPackage '*Copilot*' -ErrorAction SilentlyContinue;$targets='copilot.microsoft.com','login.microsoftonline.com','graph.microsoft.com';$net=foreach($t in $targets){[pscustomobject]@{Target=$t;DNS=[bool](Resolve-DnsName $t -ErrorAction SilentlyContinue);HTTPS443=(Test-NetConnection $t -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue)}}
+@('MICROSOFT COPILOT APP TROUBLESHOOTER','Created by Dewald Pretorius',"Generated: $(Get-Date)",($app|Select-Object Name,Version,Status,InstallLocation|Format-List|Out-String -Width 220),($net|Format-Table -AutoSize|Out-String -Width 220),'Guidance: verify supported account, licence, regional availability, app package state, browser integration, enterprise policy, network access, and sign-in health.')|Set-Content (Join-Path $OutputPath 'Report.txt') -Encoding UTF8
