@@ -27,7 +27,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '2.0.0'
+$ScriptVersion = '2.0.1'
 $Stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $BackupRoot = Join-Path $OutputPath "Backup_$Stamp"
 $LogPath = Join-Path $OutputPath "Repair_$Stamp.log"
@@ -38,7 +38,7 @@ New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
 function Write-Log {
     param(
         [Parameter(Mandatory)][string]$Message,
-        [ValidateSet('INFO','WARN','ERROR','SUCCESS','WHATIF')][string]$Level = 'INFO'
+        [ValidateSet('INFO','WARN','ERROR','SUCCESS')][string]$Level = 'INFO'
     )
 
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
@@ -48,42 +48,50 @@ function Write-Log {
         'WARN'    { Write-Host $Message -ForegroundColor Yellow }
         'ERROR'   { Write-Host $Message -ForegroundColor Red }
         'SUCCESS' { Write-Host $Message -ForegroundColor Green }
-        'WHATIF'  { Write-Host "WHAT IF: $Message" -ForegroundColor Cyan }
         default   { Write-Host $Message }
     }
 }
 
-function Get-CopilotPackages {
-    $packages = @(
+function Get-DetectedCopilotPackages {
+    return @(
         Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -match 'Copilot' -or
             $_.PackageFullName -match 'Copilot' -or
             $_.PackageFamilyName -match 'Copilot' -or
             $_.InstallLocation -match 'Copilot'
-        }
+        } | Sort-Object Name -Unique
     )
+}
+
+function Get-CopilotAppPackages {
+    $detected = @(Get-DetectedCopilotPackages)
 
     return @(
-        $packages | Sort-Object \
-            @{ Expression = { if ($_.Name -match '^Microsoft\.Copilot') { 0 } elseif ($_.Name -match 'Copilot') { 1 } else { 2 } } }, \
-            Name -Unique
+        $detected | Where-Object {
+            $_.Name -notmatch '(?i)Provider|Runtime|Framework'
+        } | Sort-Object -Property @{
+            Expression = {
+                if ($_.Name -match '^Microsoft\.Copilot') { 0 }
+                elseif ($_.Name -match 'Copilot') { 1 }
+                else { 2 }
+            }
+        }, Name -Unique
     )
 }
 
 function Get-CopilotCacheItems {
     $items = @()
 
-    foreach ($package in @(Get-CopilotPackages)) {
+    foreach ($package in @(Get-CopilotAppPackages)) {
         if ([string]::IsNullOrWhiteSpace($package.PackageFamilyName)) { continue }
 
         $packageRoot = Join-Path $env:LOCALAPPDATA "Packages\$($package.PackageFamilyName)"
         $candidatePaths = [ordered]@{
-            'LocalCache'              = (Join-Path $packageRoot 'LocalCache')
-            'TempState'               = (Join-Path $packageRoot 'TempState')
-            'WebView2'                = (Join-Path $packageRoot 'LocalState\EBWebView')
-            'WebView2Legacy'          = (Join-Path $packageRoot 'LocalState\WebView2')
-            'InternetCache'           = (Join-Path $packageRoot 'AC\INetCache')
-            'ServiceWorkerCache'      = (Join-Path $packageRoot 'LocalCache\Microsoft\Edge\User Data\Default\Service Worker\CacheStorage')
+            'LocalCache'         = (Join-Path $packageRoot 'LocalCache')
+            'TempState'          = (Join-Path $packageRoot 'TempState')
+            'WebView2'           = (Join-Path $packageRoot 'LocalState\EBWebView')
+            'WebView2Legacy'     = (Join-Path $packageRoot 'LocalState\WebView2')
+            'InternetCache'      = (Join-Path $packageRoot 'AC\INetCache')
         }
 
         foreach ($entry in $candidatePaths.GetEnumerator()) {
@@ -102,7 +110,7 @@ function Get-CopilotCacheItems {
 }
 
 function Stop-CopilotProcesses {
-    $packages = @(Get-CopilotPackages)
+    $packages = @(Get-CopilotAppPackages)
     $patterns = @('Copilot') + @($packages | ForEach-Object { $_.PackageFamilyName })
 
     Get-Process -Name 'Copilot' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -121,13 +129,15 @@ function Stop-CopilotProcesses {
     foreach ($process in $webViewProcesses) {
         $belongsToCopilot = $false
         foreach ($pattern in $patterns) {
-            if (-not [string]::IsNullOrWhiteSpace($pattern) -and $process.CommandLine -match [regex]::Escape($pattern)) {
+            if (-not [string]::IsNullOrWhiteSpace($pattern) -and
+                $process.CommandLine -match [regex]::Escape($pattern)) {
                 $belongsToCopilot = $true
                 break
             }
         }
 
-        if ($belongsToCopilot -and $PSCmdlet.ShouldProcess("Copilot WebView2 process $($process.ProcessId)", 'Stop process')) {
+        if ($belongsToCopilot -and
+            $PSCmdlet.ShouldProcess("Copilot WebView2 process $($process.ProcessId)", 'Stop process')) {
             Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
             Write-Log "Stopped Copilot WebView2 process ID $($process.ProcessId)." 'SUCCESS'
         }
@@ -186,7 +196,8 @@ function Get-WebView2Runtime {
 function Save-CopilotSnapshot {
     param([Parameter(Mandatory)][string]$Stage)
 
-    $packages = @(Get-CopilotPackages)
+    $detectedPackages = @(Get-DetectedCopilotPackages)
+    $appPackages = @(Get-CopilotAppPackages)
     $cacheItems = @(Get-CopilotCacheItems)
     $webView = Get-WebView2Runtime
 
@@ -205,8 +216,11 @@ function Save-CopilotSnapshot {
         Action = $Action
         Computer = $env:COMPUTERNAME
         User = "$env:USERDOMAIN\$env:USERNAME"
-        Packages = @(
-            $packages | Select-Object Name, PackageFullName, PackageFamilyName, Version, Status, InstallLocation
+        DetectedPackages = @(
+            $detectedPackages | Select-Object Name, PackageFullName, PackageFamilyName, Version, Status, InstallLocation
+        )
+        RepairableAppPackages = @(
+            $appPackages | Select-Object Name, PackageFullName, PackageFamilyName, Version, Status, InstallLocation
         )
         CacheItems = @(
             $cacheItems | Select-Object PackageName, PackageFamilyName, Label, Path
@@ -251,7 +265,7 @@ function Invoke-RestartCopilot {
 function Invoke-ResetCopilotCache {
     $items = @(Get-CopilotCacheItems)
     if ($items.Count -eq 0) {
-        Write-Log 'No recognised Copilot cache folders were found.' 'WARN'
+        Write-Log 'No recognised Copilot application cache folders were found.' 'WARN'
         return
     }
 
@@ -261,13 +275,13 @@ function Invoke-ResetCopilotCache {
         Move-ItemToBackup -Path $item.Path -Label $item.Label -PackageFamilyName $item.PackageFamilyName
     }
 
-    Write-Log 'Copilot cache reset completed. The application will recreate required cache folders.' 'SUCCESS'
+    Write-Log 'Copilot cache reset completed. Required cache folders will be recreated.' 'SUCCESS'
 }
 
 function Invoke-ReregisterCopilotPackage {
-    $packages = @(Get-CopilotPackages)
+    $packages = @(Get-CopilotAppPackages)
     if ($packages.Count -eq 0) {
-        throw 'No installed Copilot AppX/MSIX package was found.'
+        throw 'No repairable Copilot application package was found. Only provider/runtime packages may be installed.'
     }
 
     Stop-CopilotProcesses
@@ -287,24 +301,23 @@ function Invoke-ReregisterCopilotPackage {
 }
 
 function Invoke-ResetCopilotPackage {
-    $packages = @(Get-CopilotPackages)
+    $packages = @(Get-CopilotAppPackages)
     if ($packages.Count -eq 0) {
-        throw 'No installed Copilot AppX/MSIX package was found.'
+        throw 'No repairable Copilot application package was found. Only provider/runtime packages may be installed.'
     }
 
     Stop-CopilotProcesses
 
-    $resetCommand = Get-Command Reset-AppxPackage -ErrorAction SilentlyContinue
-    if (-not $resetCommand) {
-        Write-Log 'Reset-AppxPackage is unavailable on this Windows build. Falling back to package re-registration.' 'WARN'
+    if (-not (Get-Command Reset-AppxPackage -ErrorAction SilentlyContinue)) {
+        Write-Log 'Reset-AppxPackage is unavailable. Falling back to package re-registration.' 'WARN'
         Invoke-ReregisterCopilotPackage
         return
     }
 
     foreach ($package in $packages) {
-        if ($PSCmdlet.ShouldProcess($package.PackageFullName, 'Reset application package and local application data')) {
+        if ($PSCmdlet.ShouldProcess($package.PackageFullName, 'Reset package and local application data')) {
             $package | Reset-AppxPackage -ErrorAction Stop
-            Write-Log "Reset Copilot package $($package.Name). Local application data was rebuilt." 'SUCCESS'
+            Write-Log "Reset Copilot package $($package.Name)." 'SUCCESS'
         }
     }
 }
@@ -345,8 +358,17 @@ try {
     $exitCode = 5
     Write-Log $_.Exception.Message 'ERROR'
 } finally {
-    try { Save-CopilotSnapshot -Stage 'After' } catch { Write-Log "Final snapshot failed: $($_.Exception.Message)" 'WARN' }
-    Write-Log "Completed. Logs and backups: $OutputPath" $(if ($exitCode -eq 0) { 'SUCCESS' } else { 'ERROR' })
+    try {
+        Save-CopilotSnapshot -Stage 'After'
+    } catch {
+        Write-Log "Final snapshot failed: $($_.Exception.Message)" 'WARN'
+    }
+
+    if ($exitCode -eq 0) {
+        Write-Log "Completed. Logs and backups: $OutputPath" 'SUCCESS'
+    } else {
+        Write-Log "Completed with errors. Logs and backups: $OutputPath" 'ERROR'
+    }
 }
 
 exit $exitCode
