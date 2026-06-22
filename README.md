@@ -123,4 +123,8 @@ The output includes:
 - Package reset is higher impact because it can clear local application data.
 - The script does not uninstall Copilot or remove the user's Microsoft account.
 
-The workflow has been source-reviewed for Windows PowerShell 5.1. Actual package names and cache locations can vary between Windows and Copilot releases, so the first run on a new build should use `-WhatIf`.
+## Validation status
+
+Tested successfully by the author on his own Windows machines. The documented Copilot diagnostic and repair workflows worked as intended on those systems.
+
+Results may vary with the Windows and Copilot version, WebView2 runtime, installed package, user profile, permissions, account configuration and network environment. Use `-WhatIf` when testing the toolkit on a new machine or software version.
